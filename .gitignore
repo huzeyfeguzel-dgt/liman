@@ -3,3 +3,11 @@ dist/
 .swiftpm/
 *.xcodeproj
 .DS_Store
+
+# İmzalama malzemesi asla depoya girmesin
+*.p12
+*.p8
+*.cer
+*.csr
+*.key
+*.pem

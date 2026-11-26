@@ -86,6 +86,8 @@ dist/Liman.app/Contents/MacOS/Liman --preview menu|logs|settings-general|setting
 
 ### İmzalama (önerilir)
 
+Adım adım rehber ve yardımcı betikler: **[docs/IMZALAMA.md](docs/IMZALAMA.md)**
+
 Developer ID yoksa DMG ad-hoc imzalı çıkar. Kullanıcıların ilk açılıştan önce şu komutu çalıştırması gerekir (Release notlarına otomatik eklenir):
 
 ```bash
