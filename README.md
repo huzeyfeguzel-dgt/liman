@@ -51,6 +51,13 @@ swift build                                   # Liman + LimanAgent + LimanCore
 ./scripts/build-app.sh                        # dist/Liman.app + dist/Liman-<sürüm>.dmg (ad-hoc imza)
 ```
 
+Kurulu uygulama için otomatik duman testi (servis, Docker API, port, compose, çökme kurtarma):
+
+```bash
+./scripts/smoke-test.sh           # tümü (~40 s)
+./scripts/smoke-test.sh --quick   # çökme testleri hariç
+```
+
 Önizleme ve test düzeneği, menü çubuğuna tıklamadan ekranları normal bir pencerede açar ve ekran görüntüsü alır:
 
 ```bash
