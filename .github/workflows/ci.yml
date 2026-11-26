@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift sürümü
+        run: swift --version
+      - name: Derle (debug)
+        run: swift build
+      - name: Paketle (ad-hoc, imzasız dağıtım değil)
+        run: |
+          brew install socktainer
+          VERSION=0.0.0-ci ./scripts/build-app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Liman-ci
+          path: dist/*.dmg
+          retention-days: 7

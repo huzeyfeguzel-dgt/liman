@@ -1,0 +1,97 @@
+name: Release
+
+# `git tag v0.2.0 && git push origin v0.2.0` → DMG derlenir, (secret'lar varsa) imzalanır + notarize edilir,
+# GitHub Release'e yüklenir. Uygulama içi güncelleme kontrolü bu Release'leri okur.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Sürüm (ör. 0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    env:
+      GITHUB_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sürümü belirle
+        id: v
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then V="${{ github.event.inputs.version }}"; else V="${GITHUB_REF_NAME#v}"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: socktainer (pakete gömülecek)
+        run: brew install socktainer
+
+      # İsteğe bağlı: Developer ID ile imzalama + notarization.
+      # Gerekli secret'lar: MACOS_CERT_P12 (base64), MACOS_CERT_PASSWORD, MACOS_SIGN_IDENTITY,
+      #                     NOTARY_KEY_P8 (base64), NOTARY_KEY_ID, NOTARY_ISSUER_ID
+      - name: İmzalama anahtarlığını hazırla
+        id: sign
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::İmzalama secret'ları yok — ad-hoc imzalı DMG üretilecek (kullanıcılar quarantine'i kaldırmalı)."
+            exit 0
+          fi
+          KC="$RUNNER_TEMP/liman.keychain-db"; KCPW="$(uuidgen)"
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KCPW" "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          xcrun notarytool store-credentials liman-notary --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --keychain "$KC"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Derle ve paketle
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          SIGN_IDENTITY: ${{ steps.sign.outputs.signed == 'true' && secrets.MACOS_SIGN_IDENTITY || '-' }}
+          NOTARY_PROFILE: ${{ steps.sign.outputs.signed == 'true' && 'liman-notary' || '' }}
+        run: ./scripts/build-app.sh
+
+      - name: Homebrew cask'ını güncelle (artifact)
+        run: |
+          SHA=$(cut -d' ' -f1 dist/Liman-${{ steps.v.outputs.version }}.dmg.sha256)
+          sed -e "s/__VERSION__/${{ steps.v.outputs.version }}/" -e "s/__SHA256__/$SHA/" -e "s|__GITHUB_REPO__|$GITHUB_REPO|" \
+            Packaging/homebrew/liman.rb > dist/liman.rb
+
+      - name: GitHub Release oluştur
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=${{ steps.v.outputs.version }}
+          NOTES="$RUNNER_TEMP/notes.md"
+          {
+            echo "## Kurulum"
+            echo
+            echo "1. \`Liman-$V.dmg\` dosyasını indirin, Liman'ı **Uygulamalar** klasörüne sürükleyin."
+            if [ "${{ steps.sign.outputs.signed }}" != "true" ]; then
+              echo "2. Bu sürüm Developer ID ile imzalanmadı. İlk açılıştan önce: \`xattr -dr com.apple.quarantine /Applications/Liman.app\`"
+            fi
+            echo
+            echo "Gereksinimler: Apple Silicon, macOS 26+, \`brew install container\`"
+            echo
+            echo "SHA-256: \`$(cut -d' ' -f1 dist/Liman-$V.dmg.sha256)\`"
+          } > "$NOTES"
+          gh release create "v$V" dist/Liman-$V.dmg dist/Liman-$V.dmg.sha256 dist/liman.rb \
+            --title "Liman $V" --notes-file "$NOTES" --verify-tag || \
+          gh release upload "v$V" dist/Liman-$V.dmg dist/Liman-$V.dmg.sha256 dist/liman.rb --clobber
