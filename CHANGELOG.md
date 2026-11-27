@@ -1,6 +1,6 @@
 # Değişiklik günlüğü
 
-## [0.2.0] — yayımlanmadı
+## [0.2.0] — 2026-11-27
 
 Liman artık yalnızca bir menü çubuğu uygulaması değil: ana penceresi, Dock simgesi ve menü çubuğu kısayolu olan bir masaüstü uygulaması. Varsayılan çalışma zamanı Colima.
 
