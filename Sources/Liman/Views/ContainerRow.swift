@@ -25,7 +25,7 @@ struct ContainerRow: View {
                         // verbatim: Türkçe yerelde 8080 → "8.080" biçimlenmesin
                         Button { state.openPort(p) } label: { Text(verbatim: ":\(p)") }
                             .buttonStyle(.link)
-                            .help("http://localhost:\(p) adresini aç")
+                            .help(L("http://localhost:\(p) adresini aç", "Open http://localhost:\(p)"))
                     }
                 }
                 .font(.caption)
@@ -41,7 +41,7 @@ struct ContainerRow: View {
             } else if hovering {
                 actions
             } else if let live, container.isRunning {
-                Text(String(format: "%.0f%%", live.cpuPercent))
+                Text(Fmt.percent(live.cpuPercent))
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     .help("CPU")
             } else if !container.isRunning {
@@ -54,22 +54,22 @@ struct ContainerRow: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .contextMenu { menuItems }
-        .confirmationDialog("\(container.name) silinsin mi?", isPresented: $confirmRemove) {
-            Button("Sil", role: .destructive) { Task { await state.perform(.remove, on: container) } }
-        } message: { Text("Konteyner zorla durdurulup silinecek. İsimli volume'ler korunur.") }
+        .confirmationDialog(L("\(container.name) silinsin mi?", "Remove \(container.name)?"), isPresented: $confirmRemove) {
+            Button(L("Sil", "Remove"), role: .destructive) { Task { await state.perform(.remove, on: container) } }
+        } message: { Text(L("Konteyner zorla durdurulup silinecek. İsimli volume'ler korunur.", "The container will be force-stopped and removed. Named volumes are kept.")) }
     }
 
     private var actions: some View {
         HStack(spacing: 2) {
             if container.isRunning {
-                iconButton("stop.fill", "Durdur") { await state.perform(.stop, on: container) }
-                iconButton("arrow.clockwise", "Yeniden başlat (belleği geri verir)") { await state.perform(.restart, on: container) }
+                iconButton("stop.fill", L("Durdur", "Stop")) { await state.perform(.stop, on: container) }
+                iconButton("arrow.clockwise", L("Yeniden başlat (belleği geri verir)", "Restart (frees memory)")) { await state.perform(.restart, on: container) }
             } else {
-                iconButton("play.fill", "Başlat") { await state.perform(.start, on: container) }
+                iconButton("play.fill", L("Başlat", "Start")) { await state.perform(.start, on: container) }
             }
-            Button(action: showLogs) { Image(systemName: "text.alignleft") }.help("Loglar")
+            Button(action: showLogs) { Image(systemName: "text.alignleft") }.help(L("Loglar", "Logs"))
             if container.isRunning {
-                Button { state.openShell(container) } label: { Image(systemName: "terminal") }.help("Terminalde kabuk aç")
+                Button { state.openShell(container) } label: { Image(systemName: "terminal") }.help(L("Terminalde kabuk aç", "Open shell in Terminal"))
             }
         }
         .buttonStyle(.borderless)
@@ -78,26 +78,26 @@ struct ContainerRow: View {
 
     @ViewBuilder private var menuItems: some View {
         if container.isRunning {
-            Button("Durdur") { Task { await state.perform(.stop, on: container) } }
-            Button("Yeniden başlat") { Task { await state.perform(.restart, on: container) } }
-            Button("Terminalde kabuk aç") { state.openShell(container) }
+            Button(L("Durdur", "Stop")) { Task { await state.perform(.stop, on: container) } }
+            Button(L("Yeniden başlat", "Restart")) { Task { await state.perform(.restart, on: container) } }
+            Button(L("Terminalde kabuk aç", "Open Shell in Terminal")) { state.openShell(container) }
         } else {
-            Button("Başlat") { Task { await state.perform(.start, on: container) } }
+            Button(L("Başlat", "Start")) { Task { await state.perform(.start, on: container) } }
         }
-        Button("Loglar", action: showLogs)
+        Button(L("Loglar", "Logs"), action: showLogs)
         if !container.publishedPorts.isEmpty {
-            Menu("Portu aç") {
+            Menu(L("Portu aç", "Open Port")) {
                 ForEach(container.publishedPorts, id: \.self) { p in
                     Button { state.openPort(p) } label: { Text(verbatim: "localhost:\(p)") }
                 }
             }
         }
         Divider()
-        Button("Kimliği kopyala") {
+        Button(L("Kimliği kopyala", "Copy ID")) {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(container.id, forType: .string)
         }
-        Button("Sil…", role: .destructive) { confirmRemove = true }
+        Button(L("Sil…", "Remove…"), role: .destructive) { confirmRemove = true }
     }
 
     private func iconButton(_ symbol: String, _ help: String, _ action: @escaping () async -> Void) -> some View {
@@ -107,15 +107,16 @@ struct ContainerRow: View {
 
 struct MemoryBar: View {
     let stats: LiveStats
+    var barWidth: CGFloat = 90
 
     var body: some View {
         HStack(spacing: 6) {
             ProgressView(value: min(stats.memoryFraction, 1))
                 .progressViewStyle(.linear)
                 .tint(tint)
-                .frame(width: 90)
+                .frame(width: barWidth)
                 .controlSize(.mini)
-            Text("\(stats.memoryBytes.humanBytes) / \(stats.memoryLimit.humanBytes)")
+            Text(verbatim: "\(stats.memoryBytes.humanBytes) / \(stats.memoryLimit.humanBytes)")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
         }

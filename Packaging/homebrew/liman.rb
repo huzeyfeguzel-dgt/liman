@@ -7,7 +7,7 @@ cask "liman" do
 
   url "https://github.com/__GITHUB_REPO__/releases/download/v#{version}/Liman-#{version}.dmg"
   name "Liman"
-  desc "Menu bar app and background service for Apple container and Colima"
+  desc "Menu bar app and background service for Colima and Apple container"
   homepage "https://github.com/__GITHUB_REPO__"
 
   livecheck do
@@ -17,7 +17,8 @@ cask "liman" do
 
   depends_on arch: :arm64
   depends_on macos: ">= :tahoe"
-  depends_on formula: "container"
+  depends_on formula: "colima"
+  depends_on formula: "docker"
 
   app "Liman.app"
 

@@ -51,9 +51,27 @@ public struct LiveStats: Sendable, Equatable {
     public var memoryFraction: Double { memoryLimit > 0 ? Double(memoryBytes) / Double(memoryLimit) : 0 }
 }
 
+/// Genel bakış grafikleri için tek bir zaman örneği.
+public struct ResourceSample: Sendable, Identifiable, Equatable {
+    public let date: Date
+    public let cpuPercent: Double
+    public let containerMemory: UInt64
+    public let hostVMMemory: UInt64
+    public let running: Int
+    public var id: Date { date }
+    public init(date: Date, cpuPercent: Double, containerMemory: UInt64, hostVMMemory: UInt64, running: Int) {
+        self.date = date; self.cpuPercent = cpuPercent; self.containerMemory = containerMemory
+        self.hostVMMemory = hostVMMemory; self.running = running
+    }
+}
+
 public enum Backend: String, CaseIterable, Identifiable, Codable, Sendable {
-    case apple, colima
+    // Sıra seçicideki sırayı belirler; rawValue'lar kayıtlı tercihler için değişmemeli.
+    case colima, apple
     public var id: String { rawValue }
+
+    /// Yeni kurulumların arka ucu. Apple container'a Ayarlar / Genel bakış'tan elle geçilebilir.
+    public static let defaultBackend: Backend = .colima
 
     public var title: String {
         switch self {
@@ -64,8 +82,8 @@ public enum Backend: String, CaseIterable, Identifiable, Codable, Sendable {
 
     public var subtitle: String {
         switch self {
-        case .apple: "Konteyner başına mikro-VM · boşta ~0 kaynak"
-        case .colima: "Tek Linux VM · tam Docker uyumluluğu"
+        case .apple: L("Konteyner başına mikro-VM · boşta ~0 kaynak", "Micro-VM per container · ~0 resources when idle")
+        case .colima: L("Tek Linux VM · tam Docker uyumluluğu", "Single Linux VM · full Docker compatibility")
         }
     }
 
@@ -82,6 +100,11 @@ public enum Backend: String, CaseIterable, Identifiable, Codable, Sendable {
 
 extension UInt64 {
     public var humanBytes: String {
-        ByteCountFormatter.string(fromByteCount: Int64(self), countStyle: .memory)
+        Fmt.bytes(self)
     }
+}
+
+public struct DockerInfo: Decodable, Sendable, Equatable {
+    public let NCPU: Int?
+    public let MemTotal: UInt64?
 }

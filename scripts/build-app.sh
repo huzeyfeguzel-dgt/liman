@@ -11,7 +11,7 @@ set -euo pipefail
 
 ROOT="${0:A:h:h}"
 cd "$ROOT"
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-0.2.0}"
 BUILD="${BUILD:-$(date +%Y%m%d%H%M)}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"          # "-" = ad-hoc
 GITHUB_REPO="${GITHUB_REPO:-${GITHUB_REPOSITORY:-__GITHUB_REPO__}}"   # güncelleme kontrolü için sahip/depo

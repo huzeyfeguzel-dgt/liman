@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import SwiftUI
 import Observation
 import ServiceManagement
 import UserNotifications
@@ -32,10 +33,16 @@ enum Prefs {
     static let memThreshold = "memoryWarningThreshold"
     static let autoRestart = "autoRestartOnMemory"
     static let checkUpdates = "checkUpdates"
+    static let manageResources = "manageResources"
+    static let resources = "resourceConfig"
+    static let manageColima = "manageColimaResources"
+    static let colimaResources = "colimaResources"
+    static let showMenuBarIcon = "showMenuBarIcon"
+    static let showInDock = "showInDock"
 
     static func register() {
         UserDefaults.standard.register(defaults: [
-            backend: Backend.apple.rawValue,
+            backend: Backend.defaultBackend.rawValue,
             autoStart: true,
             serviceAtLogin: true,
             stopRuntimeOnExit: true,
@@ -43,6 +50,11 @@ enum Prefs {
             memThreshold: 0.85,
             autoRestart: false,
             checkUpdates: true,
+            manageResources: true,
+            // Varsayılan kapalı: kullanıcının elle ayarladığı colima.yaml'ı sessizce değiştirme.
+            manageColima: false,
+            showMenuBarIcon: true,
+            showInDock: true,
         ])
     }
 
@@ -61,6 +73,8 @@ final class AppState {
             guard backend != oldValue else { return }
             UserDefaults.standard.set(backend.rawValue, forKey: Prefs.backend)
             containers = []; stats = [:]
+            // Ajanın zaten kullandığı arka ucu benimserken servisi yeniden başlatma.
+            if adoptingAgentBackend { return }
             Task { await onBackendChanged(from: oldValue) }
         }
     }
@@ -70,8 +84,25 @@ final class AppState {
     private(set) var hostMemory: UInt64 = 0
     private(set) var lastError: String?
     private(set) var busyContainers: Set<String> = []
-    /// Log penceresinde gösterilecek konteyner kimliği.
+    /// Log ekranında gösterilecek konteyner kimliği.
     var logTargetID: String?
+    /// Ana penceredeki seçili sayfa (menü çubuğundan da yönlendirilir).
+    var page: MainPage? = .overview
+
+    /// Apple container varsayılan kaynakları (kaydedilmiş istek; uygulanana kadar ajan eskisini kullanır).
+    private(set) var resources: ResourceConfig
+    var manageResources: Bool {
+        didSet { UserDefaults.standard.set(manageResources, forKey: Prefs.manageResources) }
+    }
+
+    /// SwiftUI'nin pencere açma eylemi; Dock simgesine tıklanınca ana pencereyi yeniden açmak için saklanır.
+    @ObservationIgnored var openWindowAction: OpenWindowAction?
+
+    /// Colima VM kaynakları (kaydedilmiş istek).
+    private(set) var colimaResources: ColimaResources
+    var manageColima: Bool {
+        didSet { UserDefaults.standard.set(manageColima, forKey: Prefs.manageColima) }
+    }
 
     private var prevCPU: [String: (usage: UInt64, at: Date)] = [:]
     private var warned: [String: Date] = [:]
@@ -83,8 +114,33 @@ final class AppState {
     var runningCount: Int { containers.filter(\.isRunning).count }
 
     var agentConfig: AgentConfig {
-        AgentConfig(backend: backend, stopRuntimeOnExit: Prefs.bool(Prefs.stopRuntimeOnExit))
+        AgentConfig(backend: backend, stopRuntimeOnExit: Prefs.bool(Prefs.stopRuntimeOnExit),
+                    resources: manageResources ? resources.clamped() : nil,
+                    colima: manageColima ? colimaResources.clamped() : nil)
     }
+
+    /// Ajanın şu an kullandığı kaynaklar (yalnızca Apple container çalışırken anlamlı).
+    var appliedResources: ResourceConfig? {
+        guard service.isLoaded, let a = service.agent, a.backend == .apple else { return nil }
+        return a.appliedResources
+    }
+
+    /// Kaydedilen kaynaklar henüz çalışma zamanına uygulanmadı mı?
+    var resourcesPending: Bool {
+        guard manageResources, backend == .apple, service.status.isRunning else { return false }
+        return appliedResources != resources.clamped()
+    }
+
+    var appliedColima: ColimaResources? {
+        guard service.isLoaded, let a = service.agent, a.backend == .colima else { return nil }
+        return a.appliedColima
+    }
+
+    var colimaPending: Bool {
+        guard manageColima, backend == .colima, service.status.isRunning else { return false }
+        return appliedColima != colimaResources.clamped()
+    }
+
     private var serviceAtLogin: Bool { Prefs.bool(Prefs.serviceAtLogin) }
 
     var groupedContainers: [(project: String?, items: [ContainerSummary])] {
@@ -96,19 +152,127 @@ final class AppState {
 
     init() {
         Prefs.register()
-        backend = Backend(rawValue: UserDefaults.standard.string(forKey: Prefs.backend) ?? "") ?? .apple
+        Self.migrateBackendDefault()
+        backend = Backend(rawValue: UserDefaults.standard.string(forKey: Prefs.backend) ?? "") ?? .defaultBackend
+        manageResources = Prefs.bool(Prefs.manageResources)
+        if let d = UserDefaults.standard.data(forKey: Prefs.resources),
+           let r = try? JSONDecoder().decode(ResourceConfig.self, from: d) {
+            resources = r
+        } else {
+            resources = .recommended
+        }
+        manageColima = Prefs.bool(Prefs.manageColima)
+        if let d = UserDefaults.standard.data(forKey: Prefs.colimaResources),
+           let r = try? JSONDecoder().decode(ColimaResources.self, from: d) {
+            colimaResources = r
+        } else {
+            colimaResources = .recommended
+        }
+    }
+
+    /// 0.2.0'da varsayılan arka uç Apple container → Colima oldu. Arka ucu hiç elle seçmemiş mevcut kullanıcılar
+    /// (tercih kaydı yok ama ajan yapılandırması var) sessizce Colima'ya geçmesin: kullandıkları arka ucu sabitle.
+    private static func migrateBackendDefault() {
+        let d = UserDefaults.standard
+        guard d.object(forKey: Prefs.backend) == nil,
+              FileManager.default.fileExists(atPath: LimanPaths.config.path) else { return }
+        let existing = AgentConfig.load().backend
+        d.set(existing.rawValue, forKey: Prefs.backend)
+        Log.file("arka uç tercihi mevcut kurulumdan korundu: \(existing.rawValue)")
+    }
+
+    // MARK: Kaynaklar
+
+    /// Yeni kaynak değerlerini kaydeder ve servis çalışıyorsa uygular.
+    /// Ajan config.toml'u yazar; içerik değiştiyse Apple container servislerini yeniden başlatır
+    /// (çalışan konteynerler durur) ve builder'ı yeni değerlerle yeniden oluşturur.
+    func applyResources(_ r: ResourceConfig, manage: Bool) async {
+        resources = r.clamped()
+        manageResources = manage
+        if let d = try? JSONEncoder().encode(resources) { UserDefaults.standard.set(d, forKey: Prefs.resources) }
+        Log.file("kaynaklar: yönet=\(manage) konteyner \(resources.containerCPUs) CPU/\(resources.containerMemoryMB) MB, builder \(resources.builderCPUs) CPU/\(resources.builderMemoryMB) MB")
+        if service.isLoaded {
+            await restartService()
+        } else {
+            try? agentConfig.save()
+        }
+    }
+
+    /// Colima VM kaynaklarını kaydeder; servis çalışıyorsa ajanı yeniden başlatır.
+    /// Yeni ajan VM boyutu farklıysa `colima stop` + `colima start --cpus … --memory …` yapar (konteynerler durur).
+    func applyColimaResources(_ r: ColimaResources, manage: Bool) async {
+        colimaResources = r.clamped()
+        manageColima = manage
+        if let d = try? JSONEncoder().encode(colimaResources) { UserDefaults.standard.set(d, forKey: Prefs.colimaResources) }
+        Log.file("colima kaynakları: yönet=\(manage) \(colimaResources.cpus) CPU / \(colimaResources.memoryGB) GB / \(colimaResources.diskGB) GB disk")
+        if service.isLoaded {
+            await restartService()
+        } else {
+            try? agentConfig.save()
+        }
+    }
+
+    // MARK: Pencere
+
+    /// Ana pencere ekranda mı? Kapalıyken uygulama yalnızca menü çubuğunda (tray) yaşar.
+    @ObservationIgnored var mainWindowVisible = false {
+        didSet { if mainWindowVisible != oldValue { applyActivationPolicy() } }
+    }
+
+    /// Menü çubuğu simgesi açıksa pencere kapatıldığında / ⌘Q'da uygulama tray'e küçülür.
+    var minimizesToTray: Bool { Prefs.bool(Prefs.showMenuBarIcon) && !isQuitting }
+
+    func openMainWindow(_ page: MainPage? = nil) {
+        if let page { self.page = page }
+        // Tray'deyken (accessory) Dock simgesi ve uygulama menüsü pencereyle birlikte geri gelsin.
+        if Prefs.bool(Prefs.showInDock) { NSApp.setActivationPolicy(.regular) }
+        openWindowAction?(id: "main")
+        NSApp.activate()
+    }
+
+    /// Açık pencereleri kapatır; uygulama, servis ve motor menü çubuğunda çalışmaya devam eder.
+    func minimizeToTray() {
+        for w in NSApp.windows where w.isVisible && !(w is NSPanel) && w.styleMask.contains(.titled) {
+            w.close()
+        }
+        mainWindowVisible = false
+    }
+
+    /// Dock simgesi yalnızca ana pencere açıkken (ve tercih açıksa) görünür; pencere kapanınca uygulama tray'e iner.
+    /// Menü çubuğu simgesi kapalıysa uygulamaya ulaşılamayacağı için Dock her zaman açık kalır.
+    func applyActivationPolicy() {
+        let tray = Prefs.bool(Prefs.showMenuBarIcon)
+        let dock = !tray || (Prefs.bool(Prefs.showInDock) && mainWindowVisible)
+        NSApp.setActivationPolicy(dock ? .regular : .accessory)
     }
 
     // MARK: Yaşam döngüsü
 
+    /// true iken `backend` değişimi servisi yeniden başlatmaz (ajanın arka ucunu benimseme).
+    @ObservationIgnored private var adoptingAgentBackend = false
+
+    private func adoptAgentBackend() {
+        guard service.isLoaded, let a = service.agent, a.backend != backend else { return }
+        adoptingAgentBackend = true
+        backend = a.backend
+        adoptingAgentBackend = false
+    }
+
+    /// Önizleme/test: servise dokunmadan yalnızca durumu okur (plist, launchctl, docker context değişmez).
+    var readOnly = false
+
     func bootstrap() async {
+        if readOnly {
+            await service.refresh(backend: backend)
+            adoptAgentBackend()
+            startPolling()
+            return
+        }
         let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false
         Log.file("Liman \(updates.currentVersion) açıldı · bildirim izni: \(granted ? "var" : "yok")")
         await service.refresh(backend: backend)
         // Ajan başka bir arka uçla çalışıyorsa tray tercihini ona uydur (tek doğruluk kaynağı: ajan).
-        if service.isLoaded, let a = service.agent, a.backend != backend {
-            backend = a.backend
-        }
+        adoptAgentBackend()
         await service.reconcile(config: agentConfig, startAtLogin: serviceAtLogin)
         if Prefs.bool(Prefs.autoStart), service.status == .stopped {
             await startService()
@@ -140,9 +304,48 @@ final class AppState {
         if service.isLoaded { await stopService() } else { await startService() }
     }
 
-    func quitStoppingService() async {
-        await stopService()
+    /// Tam kapanış sürüyor mu? (tekrar tetiklenmeyi ve yoklamanın servisi yeniden başlatmasını önler)
+    private(set) var isQuitting = false
+
+    /// Uygulamayı tamamen kapatır: arka plan servisi, socktainer ve çalışma zamanı (Apple container / Colima)
+    /// durdurulur, ardından uygulama çıkar. Yalnızca tray menüsünden (ya da tray yokken ⌘Q ile) tetiklenir.
+    func quitFully() async {
+        guard !isQuitting else { return }
+        isQuitting = true
+        Log.file("tam kapanış istendi: servis ve çalışma zamanı durduruluyor")
+        pollTask?.cancel()
+        minimizeToTray()
+        if !readOnly {
+            if service.isLoaded {
+                // Kullanıcı tercihi ne olursa olsun bu kapanışta motor da dursun; ajan kapanırken bunu okur.
+                // Sonraki başlatmada start() tercihlerden yeni yapılandırma yazar.
+                var c = AgentConfig.load()
+                c.stopRuntimeOnExit = true
+                try? c.save()
+                await service.stop(backend: backend)
+            } else {
+                // Servis zaten kapalı ama çalışma zamanı ("çalışma zamanını kapat" tercihi kapalıyken) açık kalmış olabilir.
+                await stopRuntimeDirectly()
+            }
+            containers = []; stats = [:]
+        }
+        Log.file("tam kapanış tamamlandı")
         NSApp.terminate(nil)
+    }
+
+    private func stopRuntimeDirectly() async {
+        switch backend {
+        case .apple:
+            if let cli = Tools.find("container") {
+                let r = await Shell.run(cli, ["system", "stop"], timeout: 100)
+                Log.file("container system stop → \(r.code)")
+            }
+        case .colima:
+            if let cli = Tools.find("colima") {
+                let r = await Shell.run(cli, ["stop"], timeout: 100)
+                Log.file("colima stop → \(r.code)")
+            }
+        }
     }
 
     private func onBackendChanged(from old: Backend) async {
@@ -158,7 +361,7 @@ final class AppState {
     }
 
     private func afterStatusChange() async {
-        if service.status.isRunning, Prefs.bool(Prefs.syncContext), lastSyncedContext != backend {
+        if !readOnly, service.status.isRunning, Prefs.bool(Prefs.syncContext), lastSyncedContext != backend {
             await service.syncDockerContext(to: backend)
             lastSyncedContext = backend
         }
@@ -194,7 +397,7 @@ final class AppState {
         guard service.status.isRunning else { containers = []; return }
         do {
             containers = try await client.containers()
-            if lastError?.hasPrefix("Soket") == true || lastError?.hasPrefix("HTTP") == true { lastError = nil }
+            if lastError?.hasPrefix("Soket") == true || lastError?.hasPrefix("Socket") == true || lastError?.hasPrefix("HTTP") == true { lastError = nil }
         } catch {
             lastError = error.localizedDescription
         }
@@ -202,7 +405,7 @@ final class AppState {
 
     private func refreshStats() async {
         let running = containers.filter(\.isRunning)
-        guard !running.isEmpty else { stats = [:]; return }
+        guard !running.isEmpty else { stats = [:]; recordSample(); return }
         let c = client
         let results = await withTaskGroup(of: (String, ContainerStats?).self) { group in
             for item in running { group.addTask { (item.id, try? await c.stats(item.id)) } }
@@ -225,12 +428,15 @@ final class AppState {
             next[id] = live
         }
         stats = next
+        recordSample()
         await memoryWatchdog()
     }
 
     /// Apple Virtualization.framework'ün eksik ballooning desteği nedeniyle şişen konteynerleri uyarır / yeniden başlatır.
     private func memoryWatchdog() async {
-        let threshold = UserDefaults.standard.double(forKey: Prefs.memThreshold)
+        // Bozuk/eksik tercih değeri düşük bellekte yanlış alarm üretmesin.
+        let stored = UserDefaults.standard.double(forKey: Prefs.memThreshold)
+        let threshold = (0.5...0.99).contains(stored) ? stored : 0.85
         let autoRestart = Prefs.bool(Prefs.autoRestart)
         for c in containers where c.isRunning {
             guard let s = stats[c.id], s.memoryLimit > 0, s.memoryFraction >= threshold else { continue }
@@ -238,10 +444,12 @@ final class AppState {
             warned[c.id] = Date()
             let pct = Int(s.memoryFraction * 100)
             if autoRestart {
-                notify("\(c.name) yeniden başlatılıyor", "Bellek limitin %\(pct)'ine ulaştı (\(s.memoryBytes.humanBytes)).")
+                notify(L("\(c.name) yeniden başlatılıyor", "Restarting \(c.name)"),
+                       L("Bellek limitin %\(pct)'ine ulaştı (\(s.memoryBytes.humanBytes)).", "Memory reached \(pct)% of the limit (\(s.memoryBytes.humanBytes))."))
                 await perform(.restart, on: c)
             } else {
-                notify("\(c.name) bellek sınırına yakın", "%\(pct) · \(s.memoryBytes.humanBytes) / \(s.memoryLimit.humanBytes). Yeniden başlatmak belleği macOS'a geri verir.")
+                notify(L("\(c.name) bellek sınırına yakın", "\(c.name) is near its memory limit"),
+                       L("\(Fmt.percent(Double(pct))) · \(s.memoryBytes.humanBytes) / \(s.memoryLimit.humanBytes). Yeniden başlatmak belleği macOS'a geri verir.", "\(Fmt.percent(Double(pct))) · \(s.memoryBytes.humanBytes) / \(s.memoryLimit.humanBytes). Restarting returns the memory to macOS."))
             }
         }
     }
@@ -261,6 +469,61 @@ final class AppState {
 
     enum Action { case start, stop, restart, remove }
 
+    /// Genel bakış grafikleri için kaynak geçmişi (~6 s'de bir, son ~15 dakika).
+    private(set) var history: [ResourceSample] = []
+    static let historyLimit = 150
+
+    /// Tüm konteynerlerin CPU toplamı, host'un toplam CPU kapasitesine oranla (0–100).
+    var totalCPUPercent: Double {
+        stats.values.reduce(0) { $0 + $1.cpuPercent } / Double(max(HostInfo.cpuCount, 1))
+    }
+    var totalContainerMemory: UInt64 { stats.values.reduce(0) { $0 + $1.memoryBytes } }
+
+    private func recordSample() {
+        let s = ResourceSample(date: Date(), cpuPercent: totalCPUPercent, containerMemory: totalContainerMemory,
+                               hostVMMemory: HostMemory.virtualizationFootprint(), running: runningCount)
+        history.append(s)
+        if history.count > Self.historyLimit { history.removeFirst(history.count - Self.historyLimit) }
+    }
+
+    /// Birden fazla konteynere aynı eylemi paralel uygular (çoklu seçim, compose projesi).
+    func performBulk(_ action: Action, on items: [ContainerSummary]) async {
+        let targets = items.filter { c in
+            switch action {
+            case .start: !c.isRunning
+            case .stop, .restart: c.isRunning
+            case .remove: true
+            }
+        }
+        guard !targets.isEmpty else { return }
+        for c in targets { busyContainers.insert(c.id) }
+        let cl = client
+        let errors = await withTaskGroup(of: String?.self) { group in
+            for c in targets {
+                group.addTask {
+                    do { try await Self.run(action, id: c.id, client: cl); return nil }
+                    catch { return "\(c.name): \(error.localizedDescription)" }
+                }
+            }
+            var out: [String] = []
+            for await e in group { if let e { out.append(e) } }
+            return out
+        }
+        for c in targets { busyContainers.remove(c.id) }
+        lastError = errors.isEmpty ? nil : errors.joined(separator: " · ")
+        Log.file("toplu \(action): \(targets.count) konteyner, \(errors.count) hata")
+        await refreshContainers()
+    }
+
+    nonisolated private static func run(_ action: Action, id: String, client: DockerClient) async throws {
+        switch action {
+        case .start: try await client.start(id)
+        case .stop: try await client.stop(id)
+        case .restart: try await client.restart(id)
+        case .remove: try await client.remove(id)
+        }
+    }
+
     func perform(_ action: Action, on c: ContainerSummary) async {
         busyContainers.insert(c.id)
         defer { busyContainers.remove(c.id) }
@@ -279,7 +542,7 @@ final class AppState {
     }
 
     func stopAll() async {
-        for c in containers where c.isRunning { await perform(.stop, on: c) }
+        await performBulk(.stop, on: containers)
     }
 
     func openPort(_ port: Int) {
@@ -292,7 +555,7 @@ final class AppState {
 
     /// Terminal.app'te `docker exec -it <ad> sh` açar (otomasyon izni gerektirmeyen .command yöntemi).
     func openShell(_ c: ContainerSummary) {
-        guard let docker = service.dockerCLI else { lastError = "docker CLI bulunamadı (brew install docker)"; return }
+        guard let docker = service.dockerCLI else { lastError = L("docker CLI bulunamadı (brew install docker)", "docker CLI not found (brew install docker)"); return }
         let script = """
         #!/bin/zsh
         export DOCKER_HOST="unix://\(backend.socketPath)"
@@ -309,13 +572,13 @@ final class AppState {
 
     // MARK: Oturum açılışı
 
-    /// Tray uygulamasının kendisi (menü çubuğu simgesi) oturum açılışında açılsın mı.
+    /// Liman uygulamasının kendisi oturum açılışında açılsın mı.
     var launchUIAtLogin: Bool {
         get { SMAppService.mainApp.status == .enabled }
         set {
             do {
                 if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-            } catch { lastError = "Oturum öğesi: \(error.localizedDescription)" }
+            } catch { lastError = L("Oturum öğesi: \(error.localizedDescription)", "Login item: \(error.localizedDescription)") }
         }
     }
 

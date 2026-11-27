@@ -37,7 +37,7 @@ final class KernelInstaller {
         let runtime = state.service
         phase = .downloading
         guard let spec = await runtime.recommendedKernel() else {
-            phase = .failed("Önerilen çekirdek bilgisi okunamadı (container kurulu mu?)")
+            phase = .failed(L("Önerilen çekirdek bilgisi okunamadı (container kurulu mu?)", "Could not read recommended kernel info (is container installed?)"))
             return
         }
         try? FileManager.default.createDirectory(at: Self.cacheDir, withIntermediateDirectories: true)
@@ -52,7 +52,7 @@ final class KernelInstaller {
                 break
             } catch {
                 attempt += 1
-                if attempt >= 20 { phase = .failed("İndirme başarısız: \(error.localizedDescription)"); return }
+                if attempt >= 20 { phase = .failed(L("İndirme başarısız: \(error.localizedDescription)", "Download failed: \(error.localizedDescription)")); return }
                 try? await Task.sleep(for: .seconds(min(2 * attempt, 15)))
             }
         }
@@ -62,7 +62,7 @@ final class KernelInstaller {
         let actual = await Task.detached { Self.sha256(of: file) }.value
         guard actual == expected else {
             try? FileManager.default.removeItem(at: file)
-            phase = .failed("SHA-256 uyuşmadı; dosya silindi, tekrar deneyin")
+            phase = .failed(L("SHA-256 uyuşmadı; dosya silindi, tekrar deneyin", "SHA-256 mismatch; file deleted, please try again"))
             return
         }
 

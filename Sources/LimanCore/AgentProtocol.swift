@@ -33,10 +33,17 @@ public struct AgentConfig: Codable, Equatable, Sendable {
     public var backend: Backend
     /// Ajan durdurulurken çalışma zamanını da kapat (container system stop / colima stop).
     public var stopRuntimeOnExit: Bool
+    /// Apple container varsayılan kaynakları. nil: Liman config.toml'a dokunmaz.
+    public var resources: ResourceConfig?
+    /// Colima VM kaynakları. nil: Liman Colima'nın kendi ayarına (colima.yaml) dokunmaz.
+    public var colima: ColimaResources?
 
-    public init(backend: Backend = .apple, stopRuntimeOnExit: Bool = true) {
+    public init(backend: Backend = .defaultBackend, stopRuntimeOnExit: Bool = true, resources: ResourceConfig? = nil,
+                colima: ColimaResources? = nil) {
         self.backend = backend
         self.stopRuntimeOnExit = stopRuntimeOnExit
+        self.resources = resources
+        self.colima = colima
     }
 
     public static func load() -> AgentConfig {
@@ -66,12 +73,22 @@ public struct AgentStatus: Codable, Equatable, Sendable {
     public var restarts: Int
     public var updatedAt: Date
     public var version: String
+    /// Çalışma zamanının şu anda kullandığı kaynak varsayılanları (Apple container çalışırken uygulandıysa).
+    public var appliedResources: ResourceConfig?
+    /// Kaynak uygulama sırasında oluşan uyarı (ör. builder yeniden oluşturulamadı).
+    public var resourceNote: String?
+    /// Colima VM'inin ajan tarafından doğrulanan/uygulanan kaynakları.
+    public var appliedColima: ColimaResources?
 
     public init(state: AgentState, backend: Backend, message: String? = nil, pid: Int32, startedAt: Date,
-                runningSince: Date? = nil, restarts: Int = 0, updatedAt: Date = Date(), version: String) {
+                runningSince: Date? = nil, restarts: Int = 0, updatedAt: Date = Date(), version: String,
+                appliedResources: ResourceConfig? = nil, resourceNote: String? = nil,
+                appliedColima: ColimaResources? = nil) {
         self.state = state; self.backend = backend; self.message = message; self.pid = pid
         self.startedAt = startedAt; self.runningSince = runningSince; self.restarts = restarts
         self.updatedAt = updatedAt; self.version = version
+        self.appliedResources = appliedResources; self.resourceNote = resourceNote
+        self.appliedColima = appliedColima
     }
 
     /// Ajan her ~5 s'de bir yazar; 20 s'den eskiyse ajan takılmış ya da ölmüş demektir.

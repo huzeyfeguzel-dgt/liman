@@ -8,9 +8,9 @@ public enum DockerError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .socket(let m): return "Soket hatası: \(m)"
+        case .socket(let m): return L("Soket hatası: \(m)", "Socket error: \(m)")
         case .http(let c, let m): return "HTTP \(c): \(m)"
-        case .badResponse: return "Geçersiz yanıt"
+        case .badResponse: return L("Geçersiz yanıt", "Invalid response")
         }
     }
 }
@@ -33,6 +33,9 @@ public struct DockerClient: Sendable {
     public func ping() async -> Bool {
         (try? await request("GET", "/_ping", timeout: 2).status) == 200
     }
+
+    /// Docker daemon'ının gördüğü kaynaklar (`docker info` → NCPU, MemTotal).
+    public func info() async throws -> DockerInfo { try await decode("/info") }
 
     public func containers() async throws -> [ContainerSummary] {
         try await decode("/containers/json?all=true")
@@ -95,7 +98,7 @@ public struct DockerClient: Sendable {
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let maxLen = MemoryLayout.size(ofValue: addr.sun_path)
-        guard path.utf8.count < maxLen else { throw DockerError.socket("soket yolu çok uzun") }
+        guard path.utf8.count < maxLen else { throw DockerError.socket(L("soket yolu çok uzun", "socket path too long")) }
         withUnsafeMutableBytes(of: &addr.sun_path) { raw in
             raw.copyBytes(from: path.utf8)
             raw[path.utf8.count] = 0
@@ -112,7 +115,7 @@ public struct DockerClient: Sendable {
         var sent = 0
         while sent < bytes.count {
             let n = bytes.withUnsafeBufferPointer { write(fd, $0.baseAddress! + sent, bytes.count - sent) }
-            guard n > 0 else { throw DockerError.socket("yazma başarısız") }
+            guard n > 0 else { throw DockerError.socket(L("yazma başarısız", "write failed")) }
             sent += n
         }
 
@@ -125,7 +128,7 @@ public struct DockerClient: Sendable {
             else {
                 if errno == EINTR { continue }
                 if errno == EAGAIN && !data.isEmpty { break } // zaman aşımı ama veri var
-                throw DockerError.socket("okuma zaman aşımı")
+                throw DockerError.socket(L("okuma zaman aşımı", "read timed out"))
             }
         }
         return try parseHTTP(data)

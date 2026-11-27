@@ -4,11 +4,12 @@ import LimanCore
 
 /// Geliştirme ve otomatik UI testi için önizleme düzeneği.
 ///
-///   Liman --preview <ekran> [--snapshot <dosya.png>] [--delay 10] [--every 15 --count 4] [--action <eylem>]
+///   Liman --preview <ekran> [--readonly] [--snapshot <dosya.png>] [--delay 10] [--every 15 --count 4] [--action <eylem>]
 ///
-/// ekran:  menu | logs | settings-general | settings-memory | settings-diagnostics
+/// ekran:  main[-overview|-containers|-logs|-resources] | menu | logs | settings-general | settings-resources | settings-memory | settings-diagnostics
 /// eylem:  kernel → çekirdek indirmesini başlatır · start | stop | restart → servis
 ///         backend-apple | backend-colima → arka ucu değiştirir
+/// --readonly: servise dokunmaz (plist/launchctl/docker context), yalnızca durumu okur.
 /// Birden fazla görüntüde dosya adına -1, -2… eklenir.
 @MainActor
 enum PreviewHarness {
@@ -40,8 +41,14 @@ enum PreviewHarness {
     static func run(_ args: Args, state: AppState) -> NSWindow {
         let (view, size): (AnyView, NSSize) = switch args.screen {
         case "logs": (AnyView(LogsView()), NSSize(width: 760, height: 420))
+        case let s where s.hasPrefix("main"):
+            // main | main-overview | main-containers | main-logs | main-resources
+            { () -> (AnyView, NSSize) in
+                state.page = MainPage(rawValue: String(s.dropFirst("main-".count))) ?? .overview
+                return (AnyView(MainWindow()), NSSize(width: 1000, height: 660))
+            }()
         case let s where s.hasPrefix("settings"):
-            (AnyView(SettingsView(initialTab: String(s.dropFirst("settings-".count)))), NSSize(width: 520, height: 380))
+            (AnyView(SettingsView(initialTab: String(s.dropFirst("settings-".count)))), NSSize(width: 540, height: 500))
         default: (AnyView(MenuContentView()), NSSize(width: 380, height: 520))
         }
         if args.screen == "logs" { state.logTargetID = nil }
@@ -51,6 +58,15 @@ enum PreviewHarness {
         w.title = "Liman (önizleme: \(args.screen))"
         w.contentView = NSHostingView(rootView: view.environment(state))
         w.makeKeyAndOrderFront(nil)
+
+        // Ana pencerenin geri yüklenen kenar çubuğu seçimi sayfayı ezmesin diye pencere açıldıktan sonra yeniden ayarla.
+        if args.screen.hasPrefix("main") {
+            let page = MainPage(rawValue: String(args.screen.dropFirst("main-".count))) ?? .overview
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1.5))
+                state.page = page
+            }
+        }
 
         Task { @MainActor in
             switch args.action {
@@ -77,6 +93,10 @@ enum PreviewHarness {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(args.delay))
                 for k in 1...max(args.count, 1) {
+                    if args.screen.hasPrefix("main") {
+                        state.page = MainPage(rawValue: String(args.screen.dropFirst("main-".count))) ?? .overview
+                        try? await Task.sleep(for: .milliseconds(600))
+                    }
                     let out = args.count > 1 ? path.replacingOccurrences(of: ".png", with: "-\(k).png") : path
                     snapshot(w, to: out)
                     if k < args.count { try? await Task.sleep(for: .seconds(args.every)) }

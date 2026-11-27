@@ -23,22 +23,22 @@ struct LogsView: View {
         @Bindable var state = state
         VStack(spacing: 0) {
             HStack {
-                Picker("Konteyner", selection: Binding(get: { target?.id }, set: { state.logTargetID = $0 })) {
+                Picker(L("Konteyner", "Container"), selection: Binding(get: { target?.id }, set: { state.logTargetID = $0 })) {
                     ForEach(state.containers) { Text($0.name).tag(Optional($0.id)) }
                 }
                 .frame(maxWidth: 260)
-                TextField("Filtrele", text: $filter)
+                TextField(L("Filtrele", "Filter"), text: $filter)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 200)
-                Toggle("Takip et", isOn: $follow)
+                Toggle(L("Takip et", "Follow"), isOn: $follow)
                 Spacer()
-                Button { copy() } label: { Label("Kopyala", systemImage: "doc.on.doc") }
+                Button { copy() } label: { Label(L("Kopyala", "Copy"), systemImage: "doc.on.doc") }
             }
             .padding(10)
             Divider()
             ScrollViewReader { proxy in
                 ScrollView([.vertical, .horizontal]) {
-                    Text(shown.isEmpty ? (error ?? "Log yok") : shown)
+                    Text(shown.isEmpty ? (error ?? L("Log yok", "No logs")) : shown)
                         .font(.system(.callout, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -50,7 +50,7 @@ struct LogsView: View {
             }
             .background(Color(nsColor: .textBackgroundColor))
         }
-        .navigationTitle(target.map { "Loglar — \($0.name)" } ?? "Loglar")
+        .navigationTitle(target.map { L("Loglar — \($0.name)", "Logs — \($0.name)") } ?? L("Loglar", "Logs"))
         .task(id: target?.id) { await poll() }
     }
 

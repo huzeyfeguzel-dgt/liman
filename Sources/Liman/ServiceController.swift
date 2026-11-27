@@ -16,14 +16,14 @@ enum RuntimeStatus: Equatable, Sendable {
 
     var label: String {
         switch self {
-        case .unknown: "Kontrol ediliyor…"
-        case .notInstalled: "Kurulu değil"
-        case .needsKernel: "Linux çekirdeği gerekli"
-        case .stopped: "Durduruldu"
-        case .starting: "Başlatılıyor…"
-        case .stopping: "Durduruluyor…"
-        case .running: "Çalışıyor"
-        case .failed: "Hata"
+        case .unknown: L("Kontrol ediliyor…", "Checking…")
+        case .notInstalled: L("Kurulu değil", "Not installed")
+        case .needsKernel: L("Linux çekirdeği gerekli", "Linux kernel required")
+        case .stopped: L("Durduruldu", "Stopped")
+        case .starting: L("Başlatılıyor…", "Starting…")
+        case .stopping: L("Durduruluyor…", "Stopping…")
+        case .running: L("Çalışıyor", "Running")
+        case .failed: L("Hata", "Error")
         }
     }
 
@@ -33,8 +33,11 @@ enum RuntimeStatus: Equatable, Sendable {
         case .failed(let m): m
         case .running(let since?):
             Date().timeIntervalSince(since) < 60
-                ? "Az önce başladı"
-                : "\(Self.uptime.string(from: since, to: Date()) ?? "") süredir çalışıyor"
+                ? L("Az önce başladı", "Just started")
+                : {
+                    let d = Self.uptime.string(from: since, to: Date()) ?? ""
+                    return L("\(d) süredir çalışıyor", "Running for \(d)")
+                }()
         default: nil
         }
     }
@@ -47,13 +50,15 @@ enum RuntimeStatus: Equatable, Sendable {
         }
     }
 
-    private static let uptime: DateComponentsFormatter = {
+    // Hesaplanan: dil değişince yerel ayar da değişsin.
+    private static var uptime: DateComponentsFormatter {
         let f = DateComponentsFormatter()
         f.allowedUnits = [.day, .hour, .minute]
         f.unitsStyle = .abbreviated
+        f.calendar = { var c = Calendar.current; c.locale = Loc.locale; return c }()
         f.maximumUnitCount = 2
         return f
-    }()
+    }
 }
 
 /// Arka plan ajanını (LimanAgent) launchd üzerinden yönetir:
@@ -110,10 +115,11 @@ final class ServiceController {
             }
             return .stopped
         }
-        guard let a = agent else { return .starting("ajan başlatılıyor") }
+        guard let a = agent else { return .starting(L("ajan başlatılıyor", "starting agent")) }
         if a.isStale {
-            if let r = requestedAt, Date().timeIntervalSince(r) < 30 { return .starting("ajan başlatılıyor") }
-            return .failed("Ajan yanıt vermiyor (son sinyal \(Int(Date().timeIntervalSince(a.updatedAt))) s önce)")
+            if let r = requestedAt, Date().timeIntervalSince(r) < 30 { return .starting(L("ajan başlatılıyor", "starting agent")) }
+            let ago = Int(Date().timeIntervalSince(a.updatedAt))
+            return .failed(L("Ajan yanıt vermiyor (son sinyal \(ago) s önce)", "Agent not responding (last heartbeat \(ago) s ago)"))
         }
         switch a.state {
         case .running: return .running(since: a.runningSince)
@@ -122,24 +128,24 @@ final class ServiceController {
         case .stopped: return .stopped
         case .needsKernel: return .needsKernel
         case .notInstalled: return .notInstalled
-        case .failed: return .failed(a.message ?? "bilinmeyen hata")
+        case .failed: return .failed(a.message ?? L("bilinmeyen hata", "unknown error"))
         }
     }
 
     // MARK: Yaşam döngüsü
 
     func start(config: AgentConfig, startAtLogin: Bool) async {
-        pending = .starting("servis kaydediliyor")
+        pending = .starting(L("servis kaydediliyor", "registering service"))
         status = pending!
         defer { pending = nil }
         guard let exe = agentExecutable else {
-            pending = nil; status = .failed("LimanAgent ikilisi bulunamadı"); return
+            pending = nil; status = .failed(L("LimanAgent ikilisi bulunamadı", "LimanAgent binary not found")); return
         }
         do {
             try config.save()
             try writePlist(agentExecutable: exe)
         } catch {
-            pending = nil; status = .failed("Yapılandırma yazılamadı: \(error.localizedDescription)"); return
+            pending = nil; status = .failed(L("Yapılandırma yazılamadı: \(error.localizedDescription)", "Could not write configuration: \(error.localizedDescription)")); return
         }
         // Eski bir çalıştırmadan kalan durum dosyası yanlış "çalışıyor" göstermesin.
         try? FileManager.default.removeItem(at: LimanPaths.status)
@@ -301,7 +307,7 @@ final class ServiceController {
     }
 
     func installKernel(tar: URL, binaryPath: String) async -> ShellResult {
-        guard let cli = containerCLI else { return ShellResult(code: -1, out: "", err: "container yok") }
+        guard let cli = containerCLI else { return ShellResult(code: -1, out: "", err: L("container yok", "container not found")) }
         // Arşiv üyeleri "./" önekli olabilir; iki biçimi de deneriz. --force KULLANMIYORUZ (mevcut çekirdeği önce siler).
         var r = await Shell.run(cli, ["system", "kernel", "set", "--tar", tar.path, "--binary", binaryPath], timeout: 300)
         if !hasKernel {

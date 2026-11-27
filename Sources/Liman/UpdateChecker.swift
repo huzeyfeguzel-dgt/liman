@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import LimanCore
 
 /// GitHub Releases üzerinden yeni sürüm kontrolü (App Store dışı dağıtım).
 /// Depo, derleme sırasında Info.plist'e yazılan `LimanGitHubRepo` anahtarından okunur ("sahip/depo").
@@ -51,7 +52,7 @@ final class UpdateChecker {
         req.timeoutInterval = 15
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
-            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { error = "GitHub yanıtı: \((resp as? HTTPURLResponse)?.statusCode ?? 0)"; return }
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { let code = (resp as? HTTPURLResponse)?.statusCode ?? 0; error = L("GitHub yanıtı: \(code)", "GitHub response: \(code)"); return }
             let r = try JSONDecoder().decode(Release.self, from: data)
             if r.draft != true, r.prerelease != true { latest = r }
             error = nil

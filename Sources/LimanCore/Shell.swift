@@ -68,7 +68,7 @@ public enum Shell {
         if group.wait(timeout: deadline) == .timedOut {
             p.terminate()
             _ = group.wait(timeout: .now() + 2)
-            return ShellResult(code: -2, out: String(decoding: outData, as: UTF8.self), err: "zaman aşımı (\(Int(timeout)) s)")
+            return ShellResult(code: -2, out: String(decoding: outData, as: UTF8.self), err: L("zaman aşımı (\(Int(timeout)) s)", "timed out (\(Int(timeout)) s)"))
         }
         p.waitUntilExit()
         return ShellResult(code: p.terminationStatus,
